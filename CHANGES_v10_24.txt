@@ -1,0 +1,48 @@
+NEBULA v10.24 - launch hardening (mainnet/regtest split, genesis, bug fixes)
+=============================================================================
+Base: v10.23. Host file: nebula_v10_24.py. THIS IS A NEW CHAIN IDENTITY (new genesis): old v10.23 data dirs
+are not compatible (the node ignores a DB with a different genesis).
+
+1) Network split (env NEBULA_NETWORK = mainnet | regtest; default and any unknown value = mainnet)
+   mainnet: INITIAL_BITS = GENESIS_BITS = 0x1d0fffff (256x harder than before, ~2^28 hashes/block);
+            PoW limit (MAX_TARGET) == launch difficulty.
+            GENESIS_NONCE = 798369906
+            genesis hash  = 00000009dd1b33f3ca8acfffcc2ed6d763e334c2bce36294065bf913482744cf
+   regtest: old difficulty 0x1e0fffff and old genesis (00000b74...) - used by all tests (they mine blocks).
+   Both checkpoint tables (CHECKPOINTS, NEBULA_CHECKPOINTS x2 in host) now use GENESIS_HASH_HEX.
+   The 14 group files that kept their own copy of INITIAL_BITS / MAX_TARGET follow the same switch.
+   To pick another launch difficulty: change the bits, re-mine with mine_genesis(bits) (host), paste nonce+hash.
+2) Bug: OrphanPool NameError. P2PNode.__init__ used OrphanPool, which was defined ~21,000 lines later, so
+   the module-level API state could not start its P2P node. Class moved before P2PNode.
+3) Bug (fund loss): Script.p2pkh_locking_from_address() built a P2PKH script around the hash of a SCRIPT address
+   ("M..."), so coins sent there were unspendable. It now returns a real P2SH locking script for script addresses
+   and rejects payloads that are not 20 bytes.
+4) Security defaults:
+   - RPC password: no more well-known default; random per process unless NEBULA_RPC_PASSWORD is set.
+   - RPC basic auth compared with hmac.compare_digest.
+   - HTTP API, explorers, Stratum default bind: 127.0.0.1 (set NEBULA_BIND=0.0.0.0 or an IP to expose). P2P unchanged.
+5) New tool: tools/make_foundation_multisig.py (M-of-N P2SH address from PUBLIC keys). FOUNDATION_ADDRESS was NOT changed
+   (needs your keys; changing it changes the genesis merkle root -> re-mine genesis).
+6) OP_CHECKSIG (ScriptInterpreter._checksig) now accepts only SIGHASH_ALL (0x01); other hash-type bytes were ignored before
+   (malleable signatures).
+7) New tools/launch_preflight.py (checks genesis, checkpoints, foundation multisig, seeds, TLS, keys, coincurve, ...) and
+   LAUNCH_RUNBOOK.md (what only a human can do).
+8) Wallet bug found by the local testnet: NEBULAWallet.build_transaction() could pick an IMMATURE coinbase output
+   (< 100 confirmations) and the network then rejected the payment. New NEBULAWallet.spendable_utxos() skips them.
+9) New tools/local_testnet.py: 3 real nodes (TLS) + a late joiner + fork/reorg, real mined blocks and a real signed payment.
+   Last run: 15/15 (full) and 10/10 (--quick). Needs NEBULA_NETWORK=regtest.
+10) New tools/mine_to_address.py: mines TEST blocks to a given public address on a private regtest chain
+    (saved in ~/nebula_testnet), shows balance and spendable balance; validates the address checksum.
+11) Tests: tests/ now point to v10.24 and set NEBULA_NETWORK=regtest. New tests/test_network_v1024.py (12 checks).
+
+Results (regtest): p2sh 13/13, sidechain 7/7, p2p_tls 22/22 + 8/8, consensus_core 23 pass/0 fail, reorg 23/23,
+wiring v1018 47/47, v1017 43/43, v1011 75/75, v1010 48/48, constructors 22 + 6 pass, storage_v1020 24/24,
+network_v1024 12/12, store_v1021 29/29.
+All suites were re-run after items 7-8 below (final state).
+
+NOT done (honest list)
+  - Launch difficulty is still low in absolute terms; choose it from the hashrate you expect.
+  - Real checkpoints (need blocks), foundation key custody, running seeds, public testnet, external audit.
+  - preflight currently reports blocking items on purpose: no checkpoints, foundation not multisig, seeds not running
+    (or machine offline), coincurve missing here, no public testnet, no external audit.
+  - Wallet/UI creation of P2SH spends not tested end to end. Retarget window (2016, max 4x) unchanged.

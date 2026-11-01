@@ -1,0 +1,48 @@
+NEBULA v10.20 - Step 4 of the launch plan: crash-safe chain storage
+====================================================================
+Base: nebula_v10_19.py. New: nebula_v10_20.py (host file renamed; everything else next to it as before).
+Only NEBULABlockchain.save() / load() were replaced, plus 6 small storage helpers placed right before the class
+and one alias line in _nebula_chain_bootstrap(). No consensus code, no other class touched.
+
+Problem in v10.19
+  - save() rewrote 3 JSON files in place with write_text(): a crash/power loss mid-write left a torn file, the three files
+    could disagree with each other, and nothing detected it.
+  - load() trusted the files: no checksum, no re-verification, UTXO snapshot taken on faith. On any exception it printed
+    "starting fresh chain" and the next save overwrote the damaged files.
+
+What v10.20 does
+  1) Atomic save. Each file is written to <name>.tmp, fsync'ed, then moved in with os.replace(); the directory is fsync'ed.
+     Install order chain -> utxo -> meta; meta is written LAST and is the commit point.
+  2) Two generations. Before installing, the current set is kept as <name>.prev (hard link, copy if the FS has no links;
+     the current file never disappears). A crash at any step leaves at least one complete, hash-verified set.
+  3) Checksums. nebula_meta.json (format 2) stores sha256 of nebula_chain.json and nebula_utxo.json, plus height, tip,
+     block_count, utxo_count, dev_mode.
+  4) Verified load. Tries current, then .prev. For each set: sha256 check; stored genesis == canonical genesis; for every
+     block: prev link, height, expected difficulty bits, proof of work, first tx is coinbase, merkle root; tip == meta.
+     The UTXO set is then REBUILT BY REPLAY of the verified blocks (authoritative). The snapshot file is only compared;
+     a disagreement is logged at ERROR and the replay result is used (a forged/edited utxo file cannot create coins).
+     NEBULA_VERIFY_ON_LOAD=full additionally runs the complete validate_block() (signatures, fees, maturity) on every block.
+  5) No silent data loss. A damaged set is moved aside as <name>[.prev].corrupt-<unix time> (never deleted, never silently
+     overwritten). Falling back to .prev is reported. Only if nothing usable is left does load() return None (as before).
+     A set that belongs to another chain_id is ignored and NOT quarantined.
+  6) Skip no-op saves (same tip + same UTXO count + files present), and concurrent save() calls are serialised; an older
+     snapshot can never overwrite a newer one.
+  7) Compatible: old v10.19 files (no checksums) still load (verified by replay). Same file names and JSON layout.
+     dev_mode chains (fund_address) keep the old rule: the UTXO snapshot is trusted, because such coins are not backed by
+     blocks (test/regtest only).
+
+Tests (tests/)
+  new  test_storage_v1020.py  24/24: round trip, no leftovers, .prev generation, torn file, bit flip, tampered block with a
+       repaired checksum, forged UTXO coin, foreign chain id, legacy files, dev-mode coin, everything damaged, 4 concurrent
+       savers, and a crash simulation that kills the process at EVERY os.replace / os.fsync call of a save (a valid chain
+       always loads afterwards and accepts new blocks).
+  old suites: see the results listed in the delivery message (test paths now point to nebula_v10_20.py).
+
+Known limits (NOT fixed here - be aware)
+  - save() still serialises the WHOLE chain each time the tip changes (O(chain) CPU/RAM/disk). Fine for a testnet, not for a
+    large mainnet: a real incremental store (append-only block files + undo + UTXO DB) is the next storage step.
+  - load() replays the whole chain at start (O(chain)); signatures are not re-checked unless NEBULA_VERIFY_ON_LOAD=full.
+  - Undo data is still not kept across a restart (unchanged behaviour; test_wiring_v1011 asserts it). Reorgs deeper than the
+    blocks mined since the restart therefore use the legacy path in _validate_on_branch.
+  - A local attacker with disk access can still rewrite chain + meta consistently (checksums are integrity, not signatures).
+  - Other launch items from the v10.19 review (fork-depth policy, difficulty, foundation key, P2SH, testnet, audit) are open.

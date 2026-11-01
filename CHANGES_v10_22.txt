@@ -1,0 +1,46 @@
+NEBULA v10.22 - Step 6 of the launch plan: fork-depth / deep-reorg policy
+==========================================================================
+Base: v10.21. Host file: nebula_v10_22.py. Consensus validation rules are unchanged; what changed is how competing
+branches are limited, alarmed, and executed. Edits: NEBULABlockchain.add_block / _validate_on_branch / _execute_reorg
+(small guarded insertions), 8 new helper methods, one class attribute, _ChainStore.hydrate_undo, one helper function.
+
+Two real bugs found by reproducing them on v10.21 first (scripts in the delivery notes), now fixed
+  A) After ANY restart a heavier competing branch that forked before the restart could not be followed:
+     "Reorg failed: undo_block() failed ... no undo data". The node stayed on the minority chain.
+     Fix: undo data is fetched lazily from the chain database (undo rows written since v10.21) for exactly the blocks a
+     fork check / reorg needs (_ensure_undo). Memory use after start is unchanged.
+  B) After a restart a legitimate competing block with the SAME coinbase as our block at that height (same miner address,
+     no extra data) was rejected: "Duplicate txid with unspent outputs" (it was validated against the tip's UTXO set).
+     Same fix: with undo data the branch state is rebuilt at the fork point.
+
+Policy
+  1) Automatic reorg limit = NEBULABlockchain.MAX_FORK_DEPTH (default 100 blocks, about 16.7 hours at 10-minute blocks).
+     Configurable: NEBULA_MAX_REORG_DEPTH (1..1,000,000, garbage -> 100) at start, or chain.set_max_reorg_depth(n).
+  2) A branch deeper than the limit that carries valid proof of work is NOT followed, but it is no longer silent:
+     chain.deep_fork_alerts() lists it (time, hash, depth, limit), and an ERROR is logged once per branch per 10 minutes
+     telling the operator how to override. Junk without proof of work creates no alert and no state.
+     This is a deliberate LOCAL policy (finality guard against 51% attacks on a young SHA256d chain). Its price: if the
+     network splits for more than the limit, honest nodes stay apart until an operator raises the limit on the side that
+     must follow. That is documented, visible and fixable, not a silent permanent split.
+  3) Checkpoints are an absolute floor (tables CHECKPOINTS and NEBULA_CHECKPOINTS, both currently only genesis):
+     a block at a checkpoint height must have that hash, and no branch may replace a checkpointed block - not even with
+     the operator override. ADD REAL CHECKPOINTS BEFORE LAUNCH and as the chain grows (e.g. every 1000 blocks, buried
+     deeper than the limit). With no checkpoints beyond genesis the checkpoint floor does nothing.
+  4) _execute_reorg refuses reorgs deeper than the limit and reorgs that would replace a checkpointed block (defence in depth).
+  5) Work comparison of a side chain is now O(reorg depth) instead of O(chain length) (shared prefix cancels; proven equal
+     to the full comparison in the tests). 60,000-block chain: 72 ms -> 0.05 ms per fork block.
+
+Tests (tests/)
+  new  test_reorg_policy_v1022.py  23 checks: limit/env, deep fork refused + alert + once-per-branch, no-PoW junk, override,
+       work-delta equivalence, reorg result == replay, checkpoint floor (also with raised limit), wrong-hash checkpoint block,
+       60k-block timing, and the restart scenarios A and B including database follow-up.
+  all earlier suites re-run against v10.22 (see the delivery message).
+
+Known limits (NOT fixed here)
+  - Each side-chain block still triggers a copy of the whole UTXO set in _validate_on_branch (O(UTXO)). With the very low
+    initial difficulty (0x1e0fffff) an attacker can make such blocks cheaply. Needs either higher launch difficulty or a
+    cache / rate limit. Open.
+  - Each new fork still copies the main chain list up to the branch point (pointers only; bounded by MAX_FORK_TIPS=32).
+  - Orphan blocks (unknown parent) are still rejected by the core add_block; the sync layer must re-request.
+  - The limit is per node: the network can only be as consistent as its operators' settings.
+  - Still open from the v10.19 review: initial difficulty, foundation key, P2SH/multisig, public testnet, external audit.

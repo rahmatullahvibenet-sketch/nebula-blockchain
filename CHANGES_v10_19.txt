@@ -1,0 +1,85 @@
+NEBULA v10.19 - dead classes removed, live group classes wired
+=============================================================
+Base: nebula_v10_18.py (118,514 lines). New: nebula_v10_19.py (~95,200 lines).
+
+1) Removed from the host: 363 dead top-level classes (23,737 lines).
+   Each removal leaves a one-line marker comment. Classes with a live copy in groups 27..63 are served by
+   those group modules; they are also published on the host module under the same name.
+   Classes with no live copy (or a different group version) are kept verbatim in
+   nebula_removed_dead_classes.py (136 classes). Nothing is lost.
+   Kept in host because the test suite exercises them: DEXRouter, NEBULAStaking and the 8 classes they need.
+2) Wiring: _nebula_chain_bootstrap() at the end of nebula_v10_19.py installs groups 27..63 + hardening via
+   nebula_chain.py. A missing/broken group never stops the node. Set NEBULA_DISABLE_CHAIN=1 to skip.
+   Keep all nebula_group*.py, nebula_chain.py, nebula_hardening.py next to nebula_v10_19.py.
+3) Fix: nebula_group42_install.py - NFTFractionalizer() takes no arguments.
+4) Known, NOT fixed: group61 mempool_shadow. MempoolWithEviction inherits the host MempoolEvictionPolicy,
+   which has no accept/_entries/sorted_by_fee_rate. Observe-only layer, error is contained and counted.
+5) Tests (tests/): v1018 47/47, v1017 43/43, v1011 75/75, v1010 48/48, constructors_a 25/25 (0 errors),
+   constructors_b 6/6, consensus_core 21/23 (same two failures as v10.18).
+   Real node: 37 groups installed, 42 layers alive, 1 layer error (group61 above).
+6) Limits: groups 06..26 installers were not supplied (reported as absent). Dead-class detection is static
+   analysis plus tests; dynamic access by computed names cannot be ruled out.
+
+7) Second pass - the 8 classes kept only for tests were judged redundant and removed
+   (AtomicSwapProtocol, ContractError, DEXRouter, LiquidityPoolSimple, NEBULAStaking, TokenPair,
+   UnbondingEntry, ValidatorStatus). Reason: every function already has a wired live class
+   (staking: PoSEngine/DelegatedStaking/StakingEngine; swaps: AtomicSwap/AtomicSwapEngine/HTLC;
+   DEX: NEBULADex/DEXEngine/AMMPool/SwapRouter). NEBULAStaking keeps its own validator set, rewards and
+   slashing - wiring it to blocks would create a second stake authority next to PoSEngine, which is
+   a consensus risk. Originals are archived in nebula_removed_dead_classes.py (kind D).
+   Tests for DEXRouter/NEBULAStaking removed from tests/test_constructors_a.py (25 -> 22 checks).
+   Audit after pass 2: 1,253 unique classes, 1,253 alive, 0 dead (static reachability).
+   Tests after pass 2: v1018 47/47, v1017 43/43, v1011 75/75, v1010 48/48, constructors 22/22 + 6/6,
+   consensus_core 21/23 (same two failures as v10.18).
+
+8) Step 1 of the launch plan - the three known defects fixed (no consensus code touched)
+   a) tests/test_consensus_core.py 'sender spent input': the test mined the block to the sender's own
+      address, and wallet change goes to a NEW address, so the check was wrong. Verified by hand:
+      total supply rose by exactly one block reward. The block now pays a separate miner address.
+   b) tests/test_consensus_core.py 'reorg to heavier fork': the REORG message comes from the block that
+      triggers the reorg, not the last block. The check now looks at all messages of the loop. The
+      reorg itself was already correct (tip == fork tip, height 5).
+   c) nebula_group61_install.py 'mempool_shadow': the old builder always failed because the host
+      MempoolEvictionPolicy has no accept()/_entries. Replaced by a small self-contained observe-only
+      _ShadowMempool (bounded, evicts lowest fee-rate, never rejects, never touches the real mempool).
+      Layer errors on a real node: 1 -> 0.
+   Results: v1018 47/47, v1017 43/43, v1011 75/75, v1010 48/48, consensus_core 23/23,
+   constructors 22/22 + 6/6. Node: 37 groups attached, 0 layer errors.
+   No change to nebula_v10_19.py in this step.
+
+9) Step 2 of the launch plan - silent error swallowing removed
+   Before: 277 handlers were `except ...: pass` or bare `except:` (106 in nebula_v10_19.py, 171 in group/chain files).
+   a) 269 `pass`-only handlers now log through logger "nebula.swallowed" (exc_info=True, exception type and
+      function name in the message). 32 of them, in persistence/verify/validation/save/load/reorg/wallet
+      paths, log at WARNING (visible by default); the rest log at DEBUG. Control flow is unchanged.
+   b) 11 bare `except:` became `except Exception:` (no longer swallow KeyboardInterrupt/SystemExit).
+   c) 8 handlers for expected control-flow exceptions (queue.Empty/Full, KeyboardInterrupt, FileNotFoundError,
+      BrokenPipeError, ConnectionResetError) were left untouched on purpose.
+   d) Two behaviour fixes in nebula_v10_19.py:
+      - calculate_next_bits(): no blanket AttributeError catch around get_next_bits(); a failed difficulty
+        retarget is logged at ERROR and re-raised instead of silently reusing the old bits.
+      - BlockFileStore._load_chainstate(): an unreadable chainstate.dat is logged at ERROR (still starts empty).
+   Proof of "nothing else changed": AST of all 76 files compared before/after with the logging calls and the
+   bare->Exception change normalised away - identical (only the two fixes in d) differ by design).
+   Tests: v1018 47/47, v1017 43/43, v1011 75/75, v1010 48/48, consensus_core 23/23, constructors 22/22 + 6/6.
+   Node: 37 groups attached, 0 layer errors.
+
+10) Step 3 of the launch plan - P2P transport encryption (TLS 1.3)
+   New file: nebula_p2p_secure.py (standard-library ssl; certificate made with `cryptography`, or the openssl CLI as fallback).
+   Host edits in nebula_v10_19.py (4 small hooks + glue, nothing else touched):
+     - P2PNode._listen: accepted socket goes through _nebula_p2p_wrap_inbound() after the ban / rate-limit checks.
+     - PeerConnection.connect: outbound socket goes through _nebula_p2p_wrap_outbound() before settimeout(None).
+     - P2PNode.__init__: _nebula_p2p_configure(data_dir) keeps node.key, node.crt, known_peers.json in <data_dir>/p2p_tls.
+   Behaviour:
+     - TLS 1.3 only, ECDSA P-256 node certificate, key file mode 0600, node id = sha256(certificate).
+     - Outbound peers are pinned trust-on-first-use (known_peers.json). A changed certificate is refused (PinMismatch).
+     - Inbound handshake runs on the peer's own thread (lazy socket), so a silent client cannot stall the accept loop.
+     - NEBULA_P2P_TLS = off | optional (default) | required. optional accepts and falls back to plaintext so old nodes
+       keep working - an attacker can strip TLS in that mode. SET required ON MAINNET.
+     - If TLS cannot start and mode is required, the node fails closed (no plaintext peers).
+   NOT covered (be aware): inbound peers are anonymous (no client certs, no Sybil defence); TOFU cannot protect the first
+   contact; Stratum (mining pool) and the Tor/I2P/SOCKS helpers are not touched; the second class RealP2PNode is NOT wired -
+   it calls PeerConnection(sock, addr, self, inbound), which does not match the only PeerConnection class (host, port, node,
+   sock, inbound), so it cannot work today and is used only by the in-file self-test.
+   Tests: tests/test_p2p_tls.py 20/20 (module, loopback), tests/test_p2p_tls_node.py 8/8 (two real P2PNode in required mode,
+   TLS 1.3 on both sockets, version handshake completed, plaintext peer refused). Older suites unchanged and passing.

@@ -1,0 +1,56 @@
+NEBULA v10.23 - Step 7 of the launch plan: real P2SH / multisig spending
+=========================================================================
+Base: v10.22. Host file: nebula_v10_23.py. Only these places were touched (nothing else):
+  1) Script.classify(): recognises P2SH (OP_HASH160 <20 bytes> OP_EQUAL). Before, P2SH outputs were UNKNOWN, so
+     coins sent to an "M..." address could be created but never spent (effectively burned).
+  2) TxOutput.address and entry_address(): P2SH outputs now yield an address (SCRIPT_ADDRESS_VERSION).
+  3) validate_tx(): the fail-closed P2SH branch ("P2SH spending not supported") is replaced by real validation via the new
+     helper _verify_p2sh_input() (placed right before the CONTRACT TEMPLATES banner):
+       - scriptSig must be non-empty and push-only, max 1650 bytes; last push = redeem script (max 520 bytes)
+       - hash160(redeem script) must equal the hash in the locking script; nested P2SH is refused
+       - signatures inside the scriptSig must use SIGHASH_ALL (no malleable hash types)
+       - signature hash is computed over the REDEEM script; the redeem script is executed with the pushed arguments
+         and must leave a true value on top
+  4) ScriptInterpreter._op_checkmultisig(): key count 0..20 and signature count <= key count (were unchecked).
+Consensus note: this CHANGES what is valid (P2SH spends were invalid before). On a chain that has not launched, no
+migration is needed. On a running network all nodes must upgrade together.
+
+Tests (tests/)
+  new  test_p2sh_v1023.py  13 checks: classify, 2-of-3 valid spend, wrong key order, too few signatures, tampered
+       outputs, non-SIGHASH_ALL, wrong redeem script, non-push-only scriptSig, empty scriptSig, multisig bounds.
+  Re-run against v10.23 (paths updated): consensus_core 23/23, reorg_policy 23/23, store 29/29.
+  NOT re-run in full here: test_storage_v1020, p2p_tls, wiring suites (they do not touch the changed code paths).
+
+Known limits (NOT fixed here)
+  - Wallet/UI creation of P2SH spends was not changed or tested end to end (only validation).
+  - OP_CHECKSIG inside the interpreter still ignores the sighash-type byte except for the SIGHASH_ALL check done
+    for P2SH inputs.
+  - Still open: initial difficulty (0x1e0fffff; changing it changes the genesis hash and needs a re-mined genesis),
+    side-chain O(UTXO) copy per fork block, real checkpoints (NEBULA_CHECKPOINTS is still defined twice with the
+    same genesis-only content), NEBULA_P2P_TLS default is still "optional", foundation key custody, public testnet,
+    external audit.
+
+Addendum (same version): TLS is now fail-closed by default
+  nebula_p2p_secure.py and the host default for NEBULA_P2P_TLS changed from "optional" to "required"; an invalid value
+  now also means "required" (was "optional"). An attacker can no longer strip TLS on a default node, and a node whose
+  TLS cannot start refuses plaintext peers instead of falling back. To talk to old plaintext nodes set
+  NEBULA_P2P_TLS=optional (or off for local tests). Tests: test_p2p_tls 22/22 (2 new default-mode checks),
+  test_p2p_tls_node 8/8.
+  Also verified after the change: test_p2sh_v1023 13/13 and consensus_core 23/23 were run BEFORE this addendum; the
+  addendum touches only the TLS files (not consensus code).
+
+Addendum 2 (same version): side-chain validation budget (closes the cheap O(UTXO) DoS from v10.22 "Known limits")
+  NEBULABlockchain._validate_on_branch(): after the cheap PoW / difficulty-bits checks and right before the UTXO-set copy,
+  a token bucket is consulted (new _side_budget_take, two class attributes SIDE_BLOCK_BURST=300 and SIDE_BLOCK_PER_MIN=30,
+  env NEBULA_SIDE_BLOCK_BURST / NEBULA_SIDE_BLOCK_PER_MIN). A normal reorg (<= 100 blocks) fits inside the burst. When the
+  budget is empty the side block is refused with "Side-chain validation rate limit reached (retry later)" (logged once a
+  minute); main-chain extension is never limited. Consensus validity rules are unchanged.
+  Tests: new tests/test_sidechain_limit_v1023.py 7/7. Re-run on the final v10.23: reorg_policy 23/23,
+  consensus_core 23/23, test_p2sh_v1023 13/13, test_p2p_tls 22/22, test_p2p_tls_node 8/8, store 29/29 (store run before
+  addendum 2; it does not touch this path).
+
+NOT done in v10.23 (needs decisions or things only you can do)
+  - Initial difficulty: still 0x1e0fffff. Raising it changes the genesis hash (genesis must be re-mined) and makes every
+    test that mines blocks in Python slow, so it needs a separate regtest/mainnet parameter split. Pick the launch
+    difficulty from the hashrate you expect.
+  - Real checkpoints, foundation-key custody (multisig/hardware), seeds actually running, public testnet, external audit.

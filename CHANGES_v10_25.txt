@@ -1,0 +1,64 @@
+NEBULA v10.25 - genesis premine
+===============================
+Base: v10.24. Host file: nebula_v10_24.py (file name unchanged). THIS IS A NEW CHAIN IDENTITY (new genesis hash):
+old chain data directories (for example ~/nebula_testnet) are NOT compatible and must be deleted.
+
+1) Genesis premine
+   The genesis coinbase transaction now has two outputs:
+     output 0: 50 NBL genesis reward to the unspendable genesis address (unchanged)
+     output 1: 1,035,000 NBL to GENESIS_PREMINE_ADDRESS = NYeuFNDnykFEhKWQnCCPeyFQFEKX2qs1oh
+   Constants: GENESIS_PREMINE_ADDRESS, GENESIS_PREMINE_AMOUNT (next to GENESIS_MESSAGE).
+   New function build_genesis_coinbase() is the single builder used by NEBULABlockchain._init_genesis() and mine_genesis().
+   The address checksum is verified when the genesis is built.
+   Because it is a coinbase output, it becomes spendable after COINBASE_MATURITY (100) blocks.
+   The premine is ON TOP of the 21,000,000 NBL mining schedule (total ever created = 22,035,000 NBL).
+   MAX_SUPPLY was not changed.
+
+2) Genesis re-mined (the merkle root changed)
+   mainnet: GENESIS_NONCE = 147803512, hash 0000000176dc3448fe722a3c91994bcc144901aa72785f377c44ee43166ba5f1
+   regtest: GENESIS_NONCE = 1385903,   hash 00000c766872ca090644312f2fefc4453664c59ff89181af204d36a7323313dd
+
+3) New files
+   tools/mine_genesis_v1025.py            mine the genesis nonce for the current network (mainnet ~10 min at 1 MH/s)
+   tests/test_genesis_premine_v1025.py    18 checks on both networks
+
+4) Bug fix: NEBULABlockchain.load() left mempool._chain_height at 0 after a restart from disk, so the mempool rejected every
+   payment that spends a mature coinbase output ("Coinbase UTXO not mature ... current 0") until a new block arrived.
+   load() now syncs the mempool height (the old body is _load_impl).
+5) New tools/send_test.py (regtest only):
+     python3 tools/send_test.py --check-only   -> asks for the 12 words (hidden input), derives m/44'/2025'/0'/0/0 and checks
+                                                  that it equals the premine address. Touches no file, needs no chain.
+     python3 tools/send_test.py                -> same check, then signs and mines a real 1,000 NBL test payment from the premine
+                                                  to a throwaway address (use --amount=N for another amount).
+   The words are asked ONE AT A TIME; every word prints "word N accepted (K letters)" (never the word), empty lines and
+   non-BIP39 entries are refused and re-asked. Old one-line mode: --single-line.
+   Verified in the sandbox with a throwaway wallet: right words MATCH, wrong words MISMATCH, test payment accepted and mined.
+
+Test results (regtest, all re-run after every change above; every suite exit code 0)
+   genesis_premine 18/18, network_v1024 12/12, consensus_core all PASS, reorg_policy 23/23, p2sh 13/13,
+   sidechain_limit 7/7, storage_v1020 24/24, store_v1021 29/29, wiring_v1018 47/47, wiring_v1017 43/43,
+   wiring_v1011 75/75, wiring_v1010 48/48, constructors_a and _b (exit 0), p2p_tls 22/22, p2p_tls_node 8/8.
+
+Before launch (unchanged from LAUNCH_RUNBOOK.md)
+   Restore the wallet from the paper mnemonic on a second device and confirm it shows NYeuFNDnykFEhKWQnCCPeyFQFEKX2qs1oh.
+   If GENESIS_PREMINE_ADDRESS / AMOUNT / GENESIS_TIMESTAMP / GENESIS_MESSAGE change, re-run tools/mine_genesis_v1025.py.
+
+v10.25b: premine address corrected to NiN8vj... (the first address of the wallet whose 12 words were written down); the earlier NWSGeb... belonged to an auto-created import-time wallet whose words were never shown. Genesis re-mined.
+
+v10.25c: the earlier test words were pasted into a chat, so the premine moved to a fresh wallet (NYeuFNDnyk...). Genesis re-mined again.
+
+v10.25d: FOUNDATION_RATE = 0.0 (was 0.02). The 2% foundation share of every block reward is removed: miners receive 100% of the
+block reward (50 NBL per block, halving every 210,000 blocks). Genesis is unchanged (no re-mine needed). The foundation share check in
+block validation is inactive at rate 0. All test suites re-run: exit code 0.
+
+v10.25e: DIFFICULTY (mainnet only). Genesis is UNCHANGED (no re-mine).
+  * New per-block LWMA rule (lwma_next_bits, window 60 blocks, integer maths): recent blocks weigh more, solvetime clamped
+    to [1, 6*T], genesis link ignored, at most 2x change per block. Used by ChainValidator.expected_bits (all branches, startup
+    verification) and NEBULABlockchain.get_next_bits (mining templates). Replaces the 2016-block / 4x retarget on mainnet.
+  * PoW limit (MAX_TARGET) on mainnet is now 256x EASIER than the launch difficulty (2^20 hashes/block, same as regtest), so
+    the difficulty can fall if miners leave and a small network cannot get stuck. Launch difficulty (genesis bits) unchanged.
+  * regtest keeps the legacy 2016-block retarget (tests and tools mine hundreds of blocks in seconds). NEBULA_DIFF_ALGO=lwma
+    switches regtest to LWMA for tests only; mainnet cannot be switched by an environment variable.
+  * New tests/test_lwma_v1025.py (22 checks, includes a real-PoW chain with timestamps and a wrong-bits rejection).
+  * All other suites re-run after the change: exit code 0.
+  * ChainEvent DIFFICULTY_ADJ, "next_adjust" and similar display fields still talk about the 2016 window; they are informational only.

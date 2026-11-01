@@ -1,0 +1,14 @@
+# Never commit keys, wallets, chain data or secrets
+nebula_data/
+nebula_testnet/
+*.key
+*.pem
+*.crt
+*.db
+*.wallet
+wallet*.json
+mnemonic*
+*.env
+.env
+__pycache__/
+*.pyc

@@ -1,0 +1,43 @@
+NEBULA v10.21 - Step 5 of the launch plan: incremental chain storage (SQLite)
+===============================================================================
+Base: v10.20. Host file: nebula_v10_21.py (everything else next to it, as before).
+Consensus code is untouched. Changed: NEBULABlockchain.save()/load() (now dispatchers), a new internal class _ChainStore and
+small helpers placed right before NEBULABlockchain, and one alias line in _nebula_chain_bootstrap().
+
+What changed
+  1) Storage is now <datadir>/nebula_chain.db (SQLite, WAL, synchronous=FULL). Tables: blocks, undo, utxo, meta.
+  2) INCREMENTAL. After the first save() a live listener is attached to the chain: every connected block is committed in ONE
+     transaction (block row + undo row + UTXO delta + meta). A reorg is applied the same way (roll back with the stored undo
+     rows, apply the new branch) in one transaction. save() only writes what is missing - O(new blocks), not O(chain).
+     Measured: add_block incl. DB commit = 2 ms with 200,000 UTXO rows in the table.
+  3) Durability: a block that add_block() acknowledged is on disk. Tested with a real kill -9 of a node process while it
+     appended blocks, and with simulated crashes in the middle of a block transaction.
+  4) Verified load: SQLite quick_check; chain_id; genesis == canonical genesis; every block (link, height, difficulty bits,
+     proof of work, coinbase, merkle); the UTXO table must match a running commitment (additive hash of all UTXO rows) kept
+     in meta - any edited/forged/missing UTXO row is detected. No full replay is needed for a normal start (faster start).
+     NEBULA_VERIFY_ON_LOAD=replay re-derives the UTXO set from the blocks and compares; =full also re-validates every block
+     incl. signatures.
+  5) Damaged DB -> moved aside as nebula_chain.db[-wal|-shm].corrupt-<time> (never deleted), then the v10.20 JSON files are
+     tried if present. A DB of another chain_id is ignored, not touched.
+  6) Migration: a data dir with only the v10.20/v10.19 JSON files loads as before and is copied into the DB automatically.
+     The JSON files are left untouched (older fallback).
+  7) NEBULA_LEGACY_JSON=1 keeps the v10.20 whole-chain JSON behaviour (used by tests/test_storage_v1020.py).
+  8) dev-mode chains (fund_address) keep the old rule: UTXO table is replaced from memory on each commit, trusted on load.
+  Race found by the new tests and fixed before release: two threads calling save() at the same time could create two stores
+  on the same file; attach() is now atomic and every transaction re-reads its state from the database.
+
+Tests (tests/)
+  new  test_store_v1021.py  29 checks: round trip, per-block commit without save(), incremental save, reorg follow,
+       tamper detection (edited/forged UTXO, edited block, missing row, garbage file), migration, foreign chain id,
+       dev-mode coin, deep-verify modes, concurrent saves while mining, simulated crash inside a block commit, real kill -9.
+  test_storage_v1020.py now sets NEBULA_LEGACY_JSON=1 (tests the JSON store). Other suites unchanged except the file path.
+
+Known limits (NOT fixed here)
+  - The node still keeps the whole chain (all blocks) and the whole UTXO set in RAM, and load() reads all blocks. The
+    database removes the O(chain) WRITE cost and the full replay at start; it does not make the node memory-light.
+  - Undo data is still not restored into block objects after a restart (unchanged; test_wiring_v1011 asserts it). The DB itself
+    keeps undo rows, so a reorg of any depth that the chain logic accepts is applied correctly to the DB.
+  - Commitment/PoW/merkle checks protect against damage and sloppy edits, not against a local attacker who rewrites blocks AND
+    the commitment consistently (re-mining all work). Use NEBULA_VERIFY_ON_LOAD=full after any doubt.
+  - Open from the v10.19 review: fork-depth policy (MAX_FORK_DEPTH=100), initial difficulty, foundation key, P2SH/multisig,
+    public testnet, external audit.
