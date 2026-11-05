@@ -42,6 +42,22 @@ networks find each other over the internet: there is no public testnet and no se
 | Default P2P port | 8333 |
 | Networks | `mainnet` (default) and `regtest` (test network with trivial difficulty) |
 
+## Run a node and connect to others
+
+```bash
+python3 nebula_v10_24.py node --port 8333                          # start a node
+python3 nebula_v10_24.py node --peers 203.0.113.10:8333             # connect to a node you know (comma-separated list)
+python3 nebula_v10_24.py node --mine --addr <YOUR_ADDRESS> --peers HOST:PORT
+```
+
+Inside a running node, `connect HOST:PORT` dials another node and `peers` lists the connected ones.
+At start-up a node also downloads `seeds.txt` from this repository (set `NEBULA_SEEDS_URL=off` to disable it).
+
+**There are no public seed nodes yet**, so right now nodes only find each other if you give them an address. Most home
+connections cannot accept inbound connections (NAT), so a connection needs one side with a public IP (or a port forward / tunnel).
+**If you have a public IP or a VPS and can keep a node running, please open an issue with your `host:port`** and it will be
+
+added to `seeds.txt`.
 ## Genesis block and premine (public and verifiable)
 
 The genesis coinbase transaction has two outputs:
