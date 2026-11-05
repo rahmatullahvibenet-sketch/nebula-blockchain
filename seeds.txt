@@ -1,0 +1,7 @@
+# NEBULA community seed nodes: one "host:port" per line. Lines starting with # are comments.
+# This file is downloaded by every node at start-up, so entries can change without a new release.
+# There are NO public seed nodes yet. If you run a node with a public IP and want to help,
+# open an issue with your host:port (or send a pull request adding it here).
+#
+# Example (do not uncomment):
+# 203.0.113.10:8333
