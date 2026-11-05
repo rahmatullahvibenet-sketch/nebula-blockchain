@@ -5072,6 +5072,48 @@ SEED_NODES = [
     ("seed10.nebula-nbl.io", DEFAULT_PORT),
 ]
 
+def parse_peer_list(text: str) -> list:
+    """'1.2.3.4:8333, host.example:9000, 5.6.7.8' -> [('1.2.3.4', 8333), ('host.example', 9000), ('5.6.7.8', DEFAULT_PORT)].
+    Invalid entries are ignored."""
+    out = []
+    for item in (text or "").replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        host, _, port = item.rpartition(":") if ":" in item else (item, "", "")
+        host = host.strip()
+        try:
+            port_i = int(port) if port else DEFAULT_PORT
+        except ValueError:
+            continue
+        if host and 0 < port_i < 65536 and (host, port_i) not in out:
+            out.append((host, port_i))
+    return out
+
+
+SEEDS_URL_DEFAULT = "https://raw.githubusercontent.com/rahmatullahvibenet-sketch/nebula-blockchain/main/seeds.txt"
+
+def fetch_seed_list(url: str = None, timeout: float = 5.0) -> list:
+    """Community seed list: a plain text file, one 'host:port' per line ('#' starts a comment), downloaded at start-up
+    so seeds can change without a new release. Override the location with NEBULA_SEEDS_URL ('off' disables it).
+    It only supplies addresses to dial: every block and transaction is still fully validated, so a bad entry can waste a
+    connection but cannot change consensus. Any error returns []."""
+    url = url if url is not None else os.environ.get("NEBULA_SEEDS_URL", SEEDS_URL_DEFAULT)
+    if not url or url.strip().lower() in ("off", "none", "0"):
+        return []
+    try:
+        import urllib.request
+        if not url.lower().startswith(("http://", "https://")):
+            return []
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            raw = r.read(65536).decode("utf-8", "replace")
+        lines = [ln.split("#", 1)[0].strip() for ln in raw.splitlines()]
+        return parse_peer_list(",".join(ln for ln in lines if ln))[:50]
+    except Exception as e:
+        log.debug(f"seed list {url} not available: {e}")
+        return []
+
+
 # DNS seed hostnames — resolved automatically at startup
 DNS_SEEDS = [
     "dnsseed.nebula-nbl.io",
@@ -5228,6 +5270,9 @@ class P2PNode:
             self.addr_book.load(self._addr_file)
         self._addr_saved = time.time()
         self._book_busy = False
+        # Manual peers ("host:port"), e.g. from `--peers` or NEBULA_PEERS. Dialled first and re-dialled while the
+        # node has no connection. Network layer only: never touches consensus rules.
+        self.extra_peers: List[Tuple[str, int]] = parse_peer_list(os.environ.get("NEBULA_PEERS", ""))
 
         # ── Security () ──────────────────────────────────
         self._dos      = DoSProtection()
@@ -5351,8 +5396,32 @@ class P2PNode:
         except Exception as e:
             print(f"Listen error: {e}")
 
+    def _connect_extra_peers(self) -> int:
+        """Dial the manually configured peers (see extra_peers). Returns how many connections succeeded."""
+        ok = 0
+        for host, port in list(self.extra_peers):
+            if not self._running:
+                break
+            try:
+                if self.connect_peer(host, port):
+                    ok += 1
+            except Exception:
+                _NB_SWALLOW_LOG.debug("swallowed Exception in P2PNode._connect_extra_peers", exc_info=True)
+        return ok
+
     def _seed_connect(self):
         time.sleep(1)
+        self._connect_extra_peers()          # manual peers first
+        try:                                  # community seed list (seeds.txt on GitHub)
+            for _h, _p in fetch_seed_list():
+                if not self._running:
+                    return
+                try:
+                    self.connect_peer(_h, _p)
+                except Exception:
+                    _NB_SWALLOW_LOG.debug("swallowed Exception in seed list dial", exc_info=True)
+        except Exception:
+            _NB_SWALLOW_LOG.debug("swallowed Exception in fetch_seed_list", exc_info=True)
         # First try DNS seeds for dynamic peer discovery
         dns_peers = resolve_dns_seeds()
         for ip, port in dns_peers:
@@ -5391,6 +5460,13 @@ class P2PNode:
                              now - p.info.last_seen > 120)]
                 for addr in stale:
                     self._peers.pop(addr, None)
+
+            # Manual peers: if we are not connected to anyone, try them again (they may have been offline at start)
+            if self.extra_peers:
+                with self._lock:
+                    _none = not any(p.info.state == PeerState.CONNECTED for p in self._peers.values())
+                if _none:
+                    self._connect_extra_peers()
 
             # Ask connected peers for more peers
             with self._lock:
@@ -6142,6 +6218,10 @@ class NEBULAFullNode:
                 elif cmd == "peers":
                     peers = self.p2p.all_peers()
                     print(json.dumps(peers, indent=2))
+                elif cmd.startswith("connect "):
+                    for _h, _p in parse_peer_list(cmd[8:]):
+                        _ok = self.p2p.connect_peer(_h, _p)
+                        print(f"  {'connected to' if _ok else 'could not connect to'} {_h}:{_p}")
                 elif cmd == "supply":
                     print(json.dumps(self.explorer.supply_info(), indent=2))
                 elif cmd == "miner":
@@ -6151,7 +6231,7 @@ class NEBULAFullNode:
                         print("Mining not enabled. Restart with --mine")
                 elif cmd == "help":
                     print("  Commands: info, wallet, block <h|hash>, tx <txid>,")
-                    print("            addr <address>, peers, supply, miner, help, quit")
+                    print("            addr <address>, peers, connect <host:port>, supply, miner, help, quit")
                 else:
                     print(f"  Unknown command: {cmd}. Type 'help'")
         except KeyboardInterrupt:
@@ -19732,7 +19812,7 @@ def _nebula_main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  node           Start full P2P node
+  node           Start full P2P node  (add --peers host:port,... to connect to other nodes)
   node --mine    Start full node + miner
   wallet-new     Create new HD wallet
   wallet-restore Restore wallet from mnemonic
@@ -19756,6 +19836,7 @@ Commands:
     ap.add_argument('--bits',   type=str, default=None, help='genesis compact bits, e.g. 0x1d0fffff')
     ap.add_argument('--host',   type=str, default=_nbl_default_bind())
     ap.add_argument('--api-port',type=int, default=8080, dest='api_port')
+    ap.add_argument('--peers',  type=str, default='', help='comma-separated peers to connect to: host:port,host:port')
     ap.add_argument('-v','--verbose', action='store_true')
     args = ap.parse_args()
     cmd  = args.command.lower()
@@ -19808,6 +19889,7 @@ Commands:
             miner_address = args.addr,
             threads       = args.threads,
         )
+        node.p2p.extra_peers = list(dict.fromkeys(list(node.p2p.extra_peers) + parse_peer_list(args.peers)))
         node.run_interactive()
 
     elif cmd == 'genesis':
