@@ -17,6 +17,7 @@ python3 tests/test_genesis_premine_v1025.py     # rebuilds both genesis blocks, 
 python3 tests/test_lwma_v1025.py                # difficulty algorithm checks
 python3 tools/local_testnet.py --quick          # 4 real nodes over TLS on YOUR machine: mining, a signed payment,
                                                 # a late joiner syncing from scratch, a fork and a re-org
+
 ```
 
 **What this proves, and what it does not.** These runs use the `regtest` network on one machine (127.0.0.1). They show
@@ -24,7 +25,9 @@ that the consensus code, the P2P layer and chain reorganisation work. They do **
 networks find each other over the internet: there is no public testnet and no seed node yet.
 
 **Where a review would help most:** the LWMA difficulty code, genesis/premine handling, signature validation
-(low-S, DER parsing), and the reorg policy. If you find a flaw, please open an issue (or message privately for security).
+(low-S, DER parsing), and the reorg policy. If you find a flaw, please open an issue (or message privately for security)
+
+**New here? Start with [REVIEW.md](REVIEW.md): a 30-minute guide to the files and functions worth reading.**
 
 ## Key parameters
 
@@ -56,7 +59,6 @@ At start-up a node also downloads `seeds.txt` from this repository (set `NEBULA_
 **There are no public seed nodes yet**, so right now nodes only find each other if you give them an address. Most home
 connections cannot accept inbound connections (NAT), so a connection needs one side with a public IP (or a port forward / tunnel).
 **If you have a public IP or a VPS and can keep a node running, please open an issue with your `host:port`** and it will be
-
 added to `seeds.txt`.
 ## Genesis block and premine (public and verifiable)
 
