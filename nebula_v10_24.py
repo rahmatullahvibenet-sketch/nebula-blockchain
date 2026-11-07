@@ -294,7 +294,7 @@ if NEBULA_NETWORK == "regtest":
     INITIAL_BITS       = 0x1e0fffff
     MAX_TARGET         = 0x0fffff * (256 ** (0x1e - 3))
 else:
-    INITIAL_BITS       = 0x1d0fffff
+    INITIAL_BITS       = 0x1d0f_ffff
     # [v10.25e] The PoW limit is now 256x EASIER than the launch difficulty (same as regtest). The launch difficulty
     # (genesis) is unchanged; the new per-block LWMA rule may lower difficulty down to this limit if miners leave,
     # so a small network can never get stuck. (Before: limit == launch difficulty, difficulty could never fall.)
@@ -360,7 +360,7 @@ if NEBULA_NETWORK == "regtest":
     GENESIS_HASH_HEX = "00000c766872ca090644312f2fefc4453664c59ff89181af204d36a7323313dd"
 else:
     GENESIS_NONCE = 147803512   # [v10.25] re-mined: genesis now includes the premine output (see CHANGES_v10_25.txt)
-    GENESIS_BITS  = 0x1d0fffff          # == INITIAL_BITS
+    GENESIS_BITS  = 0x1d0f_ffff          # == INITIAL_BITS
     GENESIS_HASH_HEX = "0000000176dc3448fe722a3c91994bcc144901aa72785f377c44ee43166ba5f1"
 TX_VERSION        = 1             # default transaction version
 GENESIS_MESSAGE   = (
@@ -1282,8 +1282,8 @@ def lwma_next_bits(chain, prev_height: int) -> int:
     for i in range(1, n + 1):
         idx = prev_height - n + i
         blk = chain[idx]
-        if idx - 1 == 0:
-            st = T                                            # genesis link ignored
+        if idx == 1:
+            st = T  # genesis link ignored
         else:
             st = blk.header.timestamp - chain[idx - 1].header.timestamp
             st = max(1, min(6 * T, st))
